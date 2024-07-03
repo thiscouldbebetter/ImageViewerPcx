@@ -1,0 +1,656 @@
+<html>
+<body>
+
+<div id="divUi">
+
+	<h3>PCX Image Viewer</h3>
+
+	<p>
+		Upload an image file in .PCX (PC Paintbrush) format
+		to view it.  Then, if desired, right-click and save it
+		in a more modern, widely-supported format, such as .PNG.
+	</p>
+
+	<div>
+		<label>Image File to Load:</label>
+		<input type="file" onchange="inputFile_Changed(this)"></input>
+	</div>
+
+	<div id="divOutput"></div>
+
+</div>
+
+<script type="text/javascript">
+
+// UI event handlers.
+
+function inputFile_Changed(inputFile)
+{
+	var fileToLoad = inputFile.files[0];
+	if (fileToLoad != null)
+	{
+		var fileReader = new FileReader();
+		fileReader.onload = (event) =>
+		{
+			var imageInPcxFormatAsBinaryString =
+				event.target.result;
+
+			var imageInPcxFormatAsBytes =
+				imageInPcxFormatAsBinaryString
+					.split("")
+					.map(x => x.charCodeAt(0) );
+
+			var imageAsPcxFile =
+				PcxImageFile.fromBytes(imageInPcxFormatAsBytes);
+
+			var d = document;
+
+			var imageAsDomElement =
+				imageAsPcxFile.toDomElement(d);
+
+			var divOutput = d.getElementById("divOutput");
+			divOutput.innerHTML = "";
+			divOutput.appendChild(imageAsDomElement);
+
+			// todo - Consolidate with .toDomElement().
+			imageAsPcxFile.toDomElement_DrawToCanvas(imageAsDomElement);
+		}
+		fileReader.readAsBinaryString(fileToLoad);
+	}
+}
+
+// Classes.
+
+class ByteStreamLittleEndian
+{
+	constructor(bytes)
+	{
+		this.bytes = bytes;
+
+		this.byteToReadNextIndex = 0;
+	}
+
+	bytesToInteger(bytesByAscendingSignificance)
+	{
+		var returnValue = 0;
+
+		const bitsPerByte = 8;
+
+		for (var i = 0; i < bytesByAscendingSignificance.length; i++)
+		{
+			var byteToConvert =
+				bytesByAscendingSignificance[i];
+
+			var bitPositionsToShift =
+				bitsPerByte * i;
+
+			var byteValueInPosition =
+				byteToConvert << bitPositionsToShift;
+
+			returnValue += byteValueInPosition;
+		}
+
+		return returnValue;
+	}
+
+	readByte()
+	{
+		var byteRead = this.bytes[this.byteToReadNextIndex];
+		this.byteToReadNextIndex++;
+		return byteRead;
+	}
+
+	readBytes(bytesToReadCount)
+	{
+		var bytesRead = [];
+
+		for (var i = 0; i < bytesToReadCount; i++)
+		{
+			var byteRead = this.readByte();
+			bytesRead.push(byteRead);
+		}
+
+		return bytesRead;
+	}
+
+	readBytesToEnd()
+	{
+		var bytesRead =
+			this.bytes.slice(this.byteToReadNextIndex);
+		this.byteToReadNextIndex = this.bytes.length;
+		return bytesRead;
+	}
+
+	readInteger16()
+	{
+		var integerAsBytes = this.readBytes(2);
+		var integer = this.bytesToInteger(integerAsBytes);
+		return integer;
+	}
+
+	seek(byteIndexToSeekTo)
+	{
+		this.byteToReadNextIndex = byteIndexToSeekTo;
+	}
+}
+
+class Color
+{
+	constructor(componentsRgb)
+	{
+		this.componentsRgb = componentsRgb;
+	}
+
+	static fromComponentsRgb(componentsRgb)
+	{
+		return new Color(componentsRgb);
+	}
+
+	toSystemColor()
+	{
+		return "rgb(" + this.componentsRgb.join(",") + ")";
+	}
+}
+
+class Coords
+{
+	constructor(x, y)
+	{
+		this.x = x;
+		this.y = y;
+	}
+
+	static ones()
+	{
+		return new Coords(1, 1);
+	}
+
+	add(other)
+	{
+		this.x += other.x;
+		this.y += other.y;
+		return this;
+	}
+
+	clone()
+	{
+		return new Coords(this.x, this.y);
+	}
+
+	subtract(other)
+	{
+		this.x -= other.x;
+		this.y -= other.y;
+		return this;
+	}
+}
+
+class PcxImageFile
+{
+	// Adapted from a file specification found at the URL
+	// https://en.wikipedia.org/wiki/Pcx.
+
+	constructor
+	(
+		fileFormatIdentifier,
+		versionAndPaletteType,
+		runLengthEncodingIsUsed,
+		bitsPerPixelPerColorPlane,
+		pixelPosMin,
+		pixelPosMax,
+		resolutionInDpi,
+		paletteColorsIf16ColorImage,
+		reserved,
+		colorPlanesPerPixel,
+		bytesPerScanLinePerColorPlane,
+		paletteColorMode,
+		sourceSystemResolution,
+		reserved2,
+		palette256ColorsIfPresent,
+		pixelsEncodedAsBytes
+	)
+	{
+		this.fileFormatIdentifier = fileFormatIdentifier; // "Magic number."
+		this.versionAndPaletteType = versionAndPaletteType;
+		this.runLengthEncodingIsUsed = runLengthEncodingIsUsed;
+		this.bitsPerPixelPerColorPlane = bitsPerPixelPerColorPlane;
+		this.pixelPosMin = pixelPosMin;
+		this.pixelPosMax = pixelPosMax;
+		this.resolutionInDpi = resolutionInDpi;
+		this.paletteColorsIf16ColorImage =
+			paletteColorsIf16ColorImage;
+		this.reserved = reserved;
+		this.colorPlanesPerPixel = colorPlanesPerPixel;
+		this.bytesPerScanLinePerColorPlane =
+			bytesPerScanLinePerColorPlane;
+		this.paletteColorMode = paletteColorMode;
+		this.sourceSystemResolution = sourceSystemResolution;
+		this.reserved2 = reserved2;
+		this.palette256ColorsIfPresent = palette256ColorsIfPresent;
+		this.pixelsEncodedAsBytes = pixelsEncodedAsBytes;
+	}
+
+	static fromBytes(bytes)
+	{
+		var reader = new ByteStreamLittleEndian(bytes);
+
+		var fileFormatIdentifier = reader.readByte();
+		var fileFormatIdentifierExpected = 10;
+		if (fileFormatIdentifier != fileFormatIdentifierExpected)
+		{
+			this.throwFormatError
+			(
+				"Uexpected file format identifier: "
+				+ fileFormatIdentifier
+			);
+		}
+
+		var versionAndPaletteTypeCode =
+			reader.readByte();
+
+		var versionAndPaletteType =
+			PcxImageFileVersionAndPaletteType
+				.byCode(versionAndPaletteTypeCode);
+
+		if (versionAndPaletteType == null)
+		{
+			this.throwFormatError
+			(
+				"Unrecognized file version value: "
+				+ versionAndPaletteTypeCode
+			);
+		}
+
+		var runLengthEncodingIsUsed;
+
+		var compressionMethodCode =
+			reader.readByte();
+
+		if (compressionMethodCode > 1)
+		{
+			this.throwFormatError
+			(
+				"Unrecognized compression method code: "
+				+ compressionMethodCode
+			);
+		}
+		else
+		{
+			runLengthEncodingIsUsed =
+				(compressionMethodCode == 1);
+		}
+
+		var bitsPerPixelPerColorPlane =
+			reader.readByte();
+
+		var pixelPosMin = new Coords
+		(
+			reader.readInteger16(),
+			reader.readInteger16()
+		);
+
+		var pixelPosMax = new Coords
+		(
+			reader.readInteger16(),
+			reader.readInteger16()
+		);
+
+		var resolutionInDpi = new Coords
+		(
+			reader.readInteger16(),
+			reader.readInteger16()
+		);
+
+		var paletteColorsIf16ColorImage = [];
+
+		var paletteColorsAsBytes = reader.readBytes(48);
+		var bytesPerColor = 3;
+		for (var i = 0; i < paletteColorsAsBytes.length; i += bytesPerColor)
+		{
+			var colorAsComponentsRgb =
+				paletteColorsAsBytes.slice(i, i + bytesPerColor);
+			var color =
+				Color.fromComponentsRgb(colorAsComponentsRgb);
+			paletteColorsIf16ColorImage.push(color);
+		}
+
+		var reserved = reader.readByte();
+
+		var colorPlanesPerPixel = reader.readByte();
+
+		var bytesPerScanLinePerColorPlane =
+			reader.readInteger16();
+
+		var paletteColorModeCode = reader.readByte();
+		var paletteColorMode =
+			PcxImageFilePaletteColorMode.byCode(paletteColorModeCode);
+		if (paletteColorMode == null)
+		{
+			this.throwFormatError
+			(
+				"Unrecognized palette color mode: "
+				+ paletteColorModeCode
+			);
+		}
+
+		var sourceSystemResolution = new Coords
+		(
+			reader.readInteger16(),
+			reader.readInteger16()
+		);
+
+		var reserved2 = reader.readBytes(54);
+
+		var pixelsEncodedAsBytes =
+			reader.readBytesToEnd();
+
+		var palette256ColorSizeInBytesIfPresent = 768;
+
+		var byteIndexOf256ColorPaletteFlag =
+			pixelsEncodedAsBytes.length
+			- palette256ColorSizeInBytesIfPresent
+			- 1;
+
+		var palette256ColorFlag =
+			pixelsEncodedAsBytes[byteIndexOf256ColorPaletteFlag];
+
+		var palette256ColorIsPresent =
+			(palette256ColorFlag == 12);
+
+		var palette256ColorsIfPresentAsBytes =
+			palette256ColorIsPresent
+			? pixelsEncodedAsBytes
+				.slice(byteIndexOf256ColorPaletteFlag + 1)
+			: null;
+
+		var palette256ColorsIfPresent = [];
+		var bytesPerColor = 3;
+		for (var i = 0; i < palette256ColorsIfPresentAsBytes.length; i += bytesPerColor)
+		{
+			var colorAsComponentsRgb =
+				palette256ColorsIfPresentAsBytes
+					.slice(i, i + bytesPerColor);
+			var color = Color.fromComponentsRgb(colorAsComponentsRgb);
+			palette256ColorsIfPresent.push(color);
+		}
+
+		if (palette256ColorIsPresent)
+		{
+			pixelsEncodedAsBytes =
+				pixelsEncodedAsBytes
+					.slice(0, byteIndexOf256ColorPaletteFlag);
+		}
+
+		var returnValue = new PcxImageFile
+		(
+			fileFormatIdentifier,
+			versionAndPaletteType,
+			runLengthEncodingIsUsed,
+			bitsPerPixelPerColorPlane,
+			pixelPosMin,
+			pixelPosMax,
+			resolutionInDpi,
+			paletteColorsIf16ColorImage,
+			reserved,
+			colorPlanesPerPixel,
+			bytesPerScanLinePerColorPlane,
+			paletteColorMode,
+			sourceSystemResolution,
+			reserved2,
+			palette256ColorsIfPresent,
+			pixelsEncodedAsBytes
+		);
+
+		return returnValue;
+	}
+
+	static throwFormatError(errorMessage)
+	{
+		throw new Error
+		(
+			"The file does not have the expected format: "
+			+ errorMessage
+		);
+	}
+
+	pixelRowsAsColors()
+	{
+		var pixelsAsBytesDecompressed;
+
+		if (this.runLengthEncodingIsUsed == false)
+		{
+			pixelsAsBytesDecompressed =
+				pixelsAsBytesCompressed;
+		}
+		else
+		{
+			pixelsAsBytesDecompressed = [];
+
+			var pixelsAsBytesCompressed =
+				this.pixelsEncodedAsBytes;
+
+			for (var i = 0; i < pixelsAsBytesCompressed.length; i++)
+			{
+				var byteCompressed = pixelsAsBytesCompressed[i];
+				var byteCompressedRleFlag =
+					(byteCompressed >> 6) & 3;
+				var runLengthEncodingIsActive =
+					byteCompressedRleFlag == 3;
+
+				if (runLengthEncodingIsActive == false)
+				{
+					var byteDecompressed = byteCompressed;
+					pixelsAsBytesDecompressed.push(byteDecompressed);
+				}
+				else
+				{
+					var runLengthInBytes =
+						byteCompressed & 63;
+					var byteValueToRepeat =
+						pixelsAsBytesCompressed[i + 1];
+
+					for (var r = 0; r < runLengthInBytes; r++)
+					{
+						pixelsAsBytesDecompressed
+							.push(byteValueToRepeat);
+					}
+				}
+
+			}
+		}
+
+		var pixelRowsAsColors = [];
+
+		var sizeInPixels = this.sizeInPixels();
+
+		var bytesPerRow =
+			sizeInPixels.x * this.colorPlanesPerPixel;
+
+		for (var y = 0; y < sizeInPixels.y; y++)
+		{
+			var pixelRowAsColors = [];
+
+			for (var x = 0; x < sizeInPixels.x; x++)
+			{
+				// todo - Optionally use a palette.
+
+				var red = pixelsAsBytesDecompressed[y * bytesPerRow + x];
+				var green = pixelsAsBytesDecompressed[y * bytesPerRow + x + 1];
+				var blue = pixelsAsBytesDecompressed[y * bytesPerRow + x + 2];
+
+				var pixelAsColor =
+					Color.fromComponentsRgb([red, green, blue]);
+
+				pixelRowAsColors.push(pixelAsColor);
+			}
+
+			pixelRowsAsColors.push(pixelRowAsColors);
+		}
+
+		return pixelRowsAsColors;
+	}
+
+	sizeInPixels()
+	{
+		var returnValue =
+			this.pixelPosMax
+			.clone()
+			.subtract(this.pixelPosMin)
+			.add(Coords.ones() );
+
+		return returnValue;
+	}
+
+	// DOM.
+
+	toDomElement(document)
+	{
+		var d = document;
+		var canvas = d.createElement("canvas");
+		var size = this.sizeInPixels();
+		canvas.width = size.x;
+		canvas.height = size.y;
+
+		//this.toDomElement_DrawToCanvas(canvas);
+
+		return canvas;
+	}
+
+	toDomElement_DrawToCanvas(canvas)
+	{
+		var size = this.sizeInPixels();
+
+		var g = canvas.getContext("2d");
+
+		g.fillStyle = "Gray"; // hack
+		g.fillRect(0, 0, size.x, size.y);
+
+		var pixelRowsAsColors = this.pixelRowsAsColors();
+
+		for (var y = 0; y < pixelRowsAsColors.length; y++)
+		{
+			var pixelRowAsColors = pixelRowsAsColors[y];
+
+			for (var x = 0; x < pixelRowAsColors.length; x++)
+			{
+				var pixelAsColor = pixelRowAsColors[x];
+				g.fillStyle = pixelAsColor.toSystemColor();
+				g.fillRect(x, y, 1, 1);
+			}
+		}
+	}
+}
+
+class PcxImageFilePaletteColorMode
+{
+	constructor(code, name)
+	{
+		this.code = code;
+		this.name = name;
+	}
+
+	static Instances()
+	{
+		if (this._instances == null)
+		{
+			this._instances =
+				new PcxImageFilePaletteColorMode_Instances();
+		}
+		return this._instances;
+	}
+
+	static byCode(code)
+	{
+		return this.Instances().byCode(code);
+	}
+}
+
+class PcxImageFilePaletteColorMode_Instances
+{
+	constructor()
+	{
+		var pcm = (c, n) =>
+			new PcxImageFilePaletteColorMode(c, n);
+
+		this.MonochromeOrColor =
+			pcm(1, "Monochrome or Color");
+		this.Grayscale =
+			pcm(2, "Grayscale");
+
+		this._All =
+		[
+			// The difference between "monochrome"
+			// and "grayscale" is not clear.
+			this.MonochromeOrColor,
+			this.Grayscale,
+		];
+	}
+
+	byCode(code)
+	{
+		return this._All.find(x => x.code == code);
+	}
+}
+
+class PcxImageFileVersionAndPaletteType
+{
+	constructor(code, name)
+	{
+		this.code = code;
+		this.name = name;
+	}
+
+	static Instances()
+	{
+		if (this._instances == null)
+		{
+			this._instances =
+				new PcxImageFileVersionAndPaletteType_Instances();
+		}
+		return this._instances;
+	}
+
+	static byCode(code)
+	{
+		return this.Instances().byCode(code);
+	}
+}
+
+class PcxImageFileVersionAndPaletteType_Instances
+{
+	constructor()
+	{
+		var vapt = (c, n) =>
+			new PcxImageFileVersionAndPaletteType(c, n);
+
+		this.Version2Dot5WithFixedEgaPalette =
+			vapt(0, "Version 2.5 with fixed EGA palette");
+		this.Version2Dot8WithModifiableEgaPalette =
+			vapt(2, "Version 2.8 with modifiable EGA palette");
+		this.Version2Dot8WithNoPalette =
+			vapt(3, "Version 2.8 with no palette");
+		this.VersionForWindows =
+			vapt(4, "PC Paintbrush for Windows");
+		this.Version3Dot0With24BitImages =
+			vapt(5, "Version 3.0 with 24-bit images");
+
+		this._All =
+		[
+			this.Version2Dot5WithFixedEgaPalette,
+			this.Version2Dot8WithModifiableEgaPalette,
+			this.Version2Dot8WithNoPalette,
+			this.VersionForWindows,
+			this.Version3Dot0With24BitImages
+		];
+	}
+
+	byCode(code)
+	{
+		return this._All.find(x => x.code == code);
+	}
+}
+
+</script>
+
+</body>
+</html>
