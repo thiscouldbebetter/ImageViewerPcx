@@ -446,8 +446,9 @@ class PcxImageFile
 				{
 					var runLengthInBytes =
 						byteCompressed & 63;
+					i++;
 					var byteValueToRepeat =
-						pixelsAsBytesCompressed[i + 1];
+						pixelsAsBytesCompressed[i];
 
 					for (var r = 0; r < runLengthInBytes; r++)
 					{
@@ -463,8 +464,16 @@ class PcxImageFile
 
 		var sizeInPixels = this.sizeInPixels();
 
-		var bytesPerRow =
-			sizeInPixels.x * this.colorPlanesPerPixel;
+		var palette256Colors =
+			this.palette256ColorsIfPresent;
+
+		var palette256IsUsed =
+			palette256Colors != null;
+
+		var bytesPerPixel =
+			palette256IsUsed
+			? 1
+			: 3; // hack
 
 		for (var y = 0; y < sizeInPixels.y; y++)
 		{
@@ -472,14 +481,29 @@ class PcxImageFile
 
 			for (var x = 0; x < sizeInPixels.x; x++)
 			{
-				// todo - Optionally use a palette.
+				var pixelByteIndexBase =
+					y * sizeInPixels.x * bytesPerPixel
+					+ x * bytesPerPixel;
 
-				var red = pixelsAsBytesDecompressed[y * bytesPerRow + x];
-				var green = pixelsAsBytesDecompressed[y * bytesPerRow + x + 1];
-				var blue = pixelsAsBytesDecompressed[y * bytesPerRow + x + 2];
+				var pixelAsColor;
 
-				var pixelAsColor =
-					Color.fromComponentsRgb([red, green, blue]);
+				if (palette256IsUsed)
+				{
+					var paletteColorIndex =
+						pixelsAsBytesDecompressed[pixelByteIndexBase];
+					pixelAsColor = palette256Colors[paletteColorIndex];
+				}
+				else
+				{
+					throw new Error("todo - Direct, non-palette based color.");
+
+					var red = pixelsAsBytesDecompressed[pixelByteIndexBase ];
+					var green = pixelsAsBytesDecompressed[pixelByteIndexBase + 1];
+					var blue = pixelsAsBytesDecompressed[pixelByteIndexBase + 2];
+
+					pixelAsColor =
+						Color.fromComponentsRgb([red, green, blue]);
+				}
 
 				pixelRowAsColors.push(pixelAsColor);
 			}

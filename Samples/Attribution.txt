@@ -1,0 +1,1 @@
+The .PCX image files in this directory are taken from the resource files for the classic game _Strange Adventures in Infinite Space_, which has been released under the GPL license.  They are included only for testing the image decoding algorithm.  No relationship exists between the author of the program in this repository and the author of these images.
